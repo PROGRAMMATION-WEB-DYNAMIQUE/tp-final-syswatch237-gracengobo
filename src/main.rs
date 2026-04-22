@@ -133,7 +133,12 @@ fn collect_snapshot() -> Result<SystemSnapshot, SysWatchError> {
         })
         .collect();
 
-    processes.sort_by(|a, b| b.cpu_usage.partial_cmp(&a.cpu_usage).unwrap());
+    // Correction: utilisation de sort_by avec comparaison correcte
+    processes.sort_by(|a, b| {
+        b.cpu_usage
+            .partial_cmp(&a.cpu_usage)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     processes.truncate(5);
 
     Ok(SystemSnapshot {
@@ -203,6 +208,7 @@ fn format_response(snapshot: &SystemSnapshot, command: &str) -> String {
         }
 
         "abort" => {
+            // Correction: faute de frappe "abort" -> "abort" conservée pour compatibilité
             // Annuler un shutdown/reboot en cours
             std::process::Command::new("shutdown")
                 .args(["/a"])
@@ -215,9 +221,10 @@ fn format_response(snapshot: &SystemSnapshot, command: &str) -> String {
             // Afficher un message dans le terminal de l'étudiant
             // msg Bonjour tout le monde !
             let text = &cmd[4..];
+            let padding = if text.len() < 38 { 38 - text.len() } else { 0 };
             println!("\n╔══════════════════════════════════════╗");
             println!("║  MESSAGE DU PROFESSEUR               ║");
-            println!("║  {}{}║", text, " ".repeat(38usize.saturating_sub(text.len())));
+            println!("║  {}{}║", text, " ".repeat(padding));
             println!("╚══════════════════════════════════════╝\n");
             format!("Message affiché sur la machine cible.\n")
         }
@@ -239,12 +246,17 @@ fn format_response(snapshot: &SystemSnapshot, command: &str) -> String {
 
         "help" => concat!(
             "Commandes disponibles:\n",
-            "  cpu   — Usage CPU + barre\n",
-            "  mem   — Mémoire RAM\n",
-            "  ps    — Top processus\n",
-            "  all   — Vue complète\n",
-            "  help  — Cette aide\n",
-            "  quit  — Fermer la connexion\n",
+            "  cpu      — Usage CPU + barre\n",
+            "  mem      — Mémoire RAM\n",
+            "  ps       — Top processus\n",
+            "  all      — Vue complète\n",
+            "  msg      — Afficher un message\n",
+            "  install  — Installer un package winget\n",
+            "  shutdown — Éteindre la machine\n",
+            "  reboot   — Redémarrer la machine\n",
+            "  abort    — Annuler extinction/redémarrage\n",
+            "  help     — Cette aide\n",
+            "  quit     — Fermer la connexion\n",
         ).to_string(),
 
         "quit" | "exit" => "BYE\n".to_string(),
@@ -252,54 +264,6 @@ fn format_response(snapshot: &SystemSnapshot, command: &str) -> String {
         _ => format!("Commande inconnue: '{}'. Tape 'help'.\n", command.trim()),
     }
 }
-
-
-// // Exo 4: Serveur TCP multithreadé —
-// fn handle_client(mut stream: TcpStream, snapshot: Arc<Mutex<SystemSnapshot>>) {
-//     let peer = stream.peer_addr().map(|a| a.to_string()).unwrap_or("inconnu".to_string());
-//     println!("[+] Connexion de {}", peer);
-//     log_event(&format!("[+] Connexion de {}", peer));
-
-//     // Message de bienvenue
-//     let welcome = concat!(
-//         "╔══════════════════════════════╗\n",
-//         "║   SysWatch v1.0 — ENSPD      ║\n",
-//         "║   Tape 'help' pour commencer ║\n",
-//         "╚══════════════════════════════╝\n",
-//         "> "
-//     );
-//     let _ = stream.write_all(welcome.as_bytes());
-
-//     let reader = BufReader::new(stream.try_clone().expect("Clone stream échoué"));
-
-//     for line in reader.lines() {
-//         match line {
-//             Ok(cmd) => {
-//                 let cmd = cmd.trim().to_string();
-//                 println!("[{}] commande: '{}'", peer, cmd);
-//                 log_event(&format!("[{}] commande: '{}'", peer, cmd));
-
-//                 if cmd.eq_ignore_ascii_case("quit") || cmd.eq_ignore_ascii_case("exit") {
-//                     let _ = stream.write_all(b"Au revoir!\n");
-//                     break;
-//                 }
-
-//                 // Lire le snapshot partagé (thread-safe)
-//                 let response = {
-//                     let snap = snapshot.lock().unwrap();
-//                     format_response(&snap, &cmd)
-//                 };
-
-//                 let _ = stream.write_all(response.as_bytes());
-//                 let _ = stream.write_all(b"> "); // prompt
-//             }
-//             Err(_) => break,
-//         }
-//     }
-
-//     println!("[-] Déconnexion de {}", peer);
-//     log_event(&format!("[-] Déconnexion de {}", peer));
-// }
 
 fn snapshot_refresher(snapshot: Arc<Mutex<SystemSnapshot>>) {
     loop {
@@ -314,7 +278,6 @@ fn snapshot_refresher(snapshot: Arc<Mutex<SystemSnapshot>>) {
         }
     }
 }
-
 
 fn log_event(message: &str) {
     let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
@@ -332,7 +295,6 @@ fn log_event(message: &str) {
         let _ = file.write_all(line.as_bytes());
     }
 }
-
 
 fn handle_client(mut stream: TcpStream, snapshot: Arc<Mutex<SystemSnapshot>>) {
     let peer = stream.peer_addr()
@@ -352,6 +314,15 @@ fn handle_client(mut stream: TcpStream, snapshot: Arc<Mutex<SystemSnapshot>>) {
     let _ = stream.write_all(b"OK\n");
     log_event(&format!("[✓] Authentifié: {}", peer));
 
+    // Message de bienvenue après authentification
+    let welcome = concat!(
+        "\n╔══════════════════════════════╗\n",
+        "║   SysWatch v1.0 — ENSPD      ║\n",
+        "║   Tape 'help' pour commencer ║\n",
+        "╚══════════════════════════════╝\n\n"
+    );
+    let _ = stream.write_all(welcome.as_bytes());
+
     // Boucle de commandes
     for line in reader.lines() {
         match line {
@@ -359,7 +330,7 @@ fn handle_client(mut stream: TcpStream, snapshot: Arc<Mutex<SystemSnapshot>>) {
                 let cmd = cmd.trim().to_string();
                 log_event(&format!("[{}] commande: '{}'", peer, cmd));
 
-                if cmd.eq_ignore_ascii_case("quit") {
+                if cmd.eq_ignore_ascii_case("quit") || cmd.eq_ignore_ascii_case("exit") {
                     let _ = stream.write_all(b"BYE\n");
                     break;
                 }
@@ -378,47 +349,6 @@ fn handle_client(mut stream: TcpStream, snapshot: Arc<Mutex<SystemSnapshot>>) {
 
     log_event(&format!("[-] Déconnexion de {}", peer));
 }
-
-
-// Main Exo 1: Types métier et affichage — Etape 3: Affichage humain avec le trait Display
-// fn main() {
-//     // Test d'affichage — données fictives pour valider les types
-//     let snapshot = SystemSnapshot {
-//         timestamp: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
-//         cpu: CpuInfo { usage_percent: 42.5, core_count: 8 },
-//         memory: MemInfo { total_mb: 16384, used_mb: 8192, free_mb: 8192 },
-//         top_processes: vec![
-//             ProcessInfo { pid: 1234, name: "code.exe".to_string(), cpu_usage: 12.3, memory_mb: 512 },
-//             ProcessInfo { pid: 5678, name: "chrome.exe".to_string(), cpu_usage: 8.1, memory_mb: 1024 },
-//         ],
-//     };
-
-//     println!("{}", snapshot);
-// }
-
-
-// Main Exo 2: Gestion d'erreurs — Etape 1: Utilisation de Result dans la fonction de collecte et affichage complet
-
-// fn main() {
-//     match collect_snapshot() {
-//         Ok(snapshot) => println!("{}", snapshot),
-//         Err(e) => eprintln!("ERREUR: {}", e),
-//     }
-// }
-
-
-// Main Exo 3: Formatage de réponses — Simuler une interface textuelle simple
-
-// fn main() {
-//     let snapshot = collect_snapshot().expect("Collecte échouée");
-//     println!("{}", format_response(&snapshot, "cpu"));
-//     println!("{}", format_response(&snapshot, "mem"));
-//     println!("{}", format_response(&snapshot, "ps"));
-//     println!("{}", format_response(&snapshot, "help"));
-// }
-
-// Main Exo 4: Serveur TCP multithreadé — Etape 1: Lancement d'un serveur TCP basique
-
 
 fn main() {
     println!("SysWatch démarrage...");
