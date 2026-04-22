@@ -23,9 +23,7 @@ fn machines() -> HashMap<String, String> {
 }
 
 struct AgentSession {
-    #[allow(dead_code)]
     name: String,
-    #[allow(dead_code)]
     ip: String,
     stream: TcpStream,
     reader: BufReader<TcpStream>,
@@ -35,12 +33,12 @@ impl AgentSession {
     fn connect(name: &str, ip: &str) -> Result<Self, String> {
         let addr = format!("{}:{}", ip, PORT);
         let stream = TcpStream::connect_timeout(
-            &addr.parse().map_err(|e| format!("{}", e))?,
-            Duration::from_secs(2),
+            &addr.parse().map_err(|e| format!("Adresse invalide: {}", e))?,
+            Duration::from_secs(3), // Timeout augmenté à 3 secondes
         )
         .map_err(|e| format!("Connexion refusée: {}", e))?;
 
-        stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+        stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
 
         let mut session = AgentSession {
             name: name.to_string(),
@@ -117,7 +115,10 @@ fn scan_machines() -> Vec<(String, String, bool)> {
     let machines = machines();
     let mut results = vec![];
 
-    println!("Scan du réseau...");
+    println!("\nScan du réseau...");
+    println!("{:<20} {:<18} {}", "Nom", "IP", "Statut");
+    println!("{}", "-".repeat(50));
+
     for (name, ip) in &machines {
         let addr = format!("{}:{}", ip, PORT);
         let reachable = TcpStream::connect_timeout(
@@ -126,9 +127,10 @@ fn scan_machines() -> Vec<(String, String, bool)> {
         )
         .is_ok();
         let status = if reachable { "✓ EN LIGNE" } else { "✗ HORS LIGNE" };
-        println!("  {} ({}) — {}", name, ip, status);
+        println!("  {:<18} {:<18} {}", name, ip, status);
         results.push((name.clone(), ip.clone(), reachable));
     }
+    println!();
     results
 }
 
@@ -146,24 +148,70 @@ fn connect_to(name: &str, ip: &str) -> Option<AgentSession> {
 }
 
 fn print_menu() {
-    println!("\n╔══════════════════════════════════════════════╗");
-    println!("║        SYSWATCH MASTER — ENSPD 2026         ║");
-    println!("╠══════════════════════════════════════════════╣");
-    println!("║  scan          — lister les machines         ║");
-    println!("║  select <nom>  — cibler une machine          ║");
-    println!("║  all <cmd>     — envoyer cmd à toutes        ║");
-    println!("╠══════════════════════════════════════════════╣");
-    println!("║  Commandes disponibles sur les agents :      ║");
-    println!("║  cpu / mem / ps / all                        ║");
-    println!("║  msg <texte>   — afficher message            ║");
-    println!("║  install <pkg> — installer un logiciel       ║");
-    println!("║  shutdown      — éteindre la machine         ║");
-    println!("║  reboot        — redémarrer                  ║");
-    println!("║  abort         — annuler extinction          ║");
-    println!("╠══════════════════════════════════════════════╣");
-    println!("║  help          — afficher ce menu            ║");
-    println!("║  quit          — quitter le master           ║");
-    println!("╚══════════════════════════════════════════════╝");
+    println!("\n╔══════════════════════════════════════════════════════╗");
+    println!("║          SYSWATCH MASTER — ENSPD 2026               ║");
+    println!("╠══════════════════════════════════════════════════════╣");
+    println!("║  scan          — lister les machines                 ║");
+    println!("║  list          — afficher les machines configurées   ║");
+    println!("║  select <nom>  — cibler une machine                  ║");
+    println!("║  status        — voir machine sélectionnée           ║");
+    println!("║  all <cmd>     — envoyer cmd à toutes les machines   ║");
+    println!("║  online <cmd>  — envoyer cmd aux machines en ligne   ║");
+    println!("╠══════════════════════════════════════════════════════╣");
+    println!("║  Commandes disponibles sur les agents :              ║");
+    println!("║  cpu / mem / ps / all                                ║");
+    println!("║  msg <texte>   — afficher message                    ║");
+    println!("║  install <pkg> — installer un logiciel (winget)      ║");
+    println!("║  shutdown      — éteindre la machine                 ║");
+    println!("║  reboot        — redémarrer                          ║");
+    println!("║  abort         — annuler extinction                  ║");
+    println!("╠══════════════════════════════════════════════════════╣");
+    println!("║  help          — afficher ce menu                    ║");
+    println!("║  clear         — effacer l'écran                     ║");
+    println!("║  quit          — quitter le master                   ║");
+    println!("╚══════════════════════════════════════════════════════╝");
+}
+
+fn list_machines() {
+    let machines = machines();
+    println!("\nMachines configurées:");
+    println!("{:<20} {:<18}", "Nom", "IP");
+    println!("{}", "-".repeat(38));
+    for (name, ip) in &machines {
+        println!("  {:<18} {}", name, ip);
+    }
+    println!();
+}
+
+// Nouvelle fonction : envoyer commande uniquement aux machines en ligne
+fn send_to_online(cmd: &str) {
+    let machines = machines();
+    println!("\nEnvoi de '{}' aux machines en ligne...", cmd);
+
+    let mut online_count = 0;
+    for (name, ip) in &machines {
+        let addr = format!("{}:{}", ip, PORT);
+        let is_online = TcpStream::connect_timeout(
+            &addr.parse().unwrap(),
+            Duration::from_secs(1),
+        ).is_ok();
+
+        if is_online {
+            online_count += 1;
+            print!("  {} — ", name);
+            std::io::stdout().flush().unwrap();
+
+            match connect_to(name, ip) {
+                Some(mut session) => {
+                    let response = session.run_command(cmd);
+                    let first_line = response.lines().next().unwrap_or("(vide)");
+                    println!("{}", first_line);
+                }
+                None => println!("erreur de connexion"),
+            }
+        }
+    }
+    println!("Commande envoyée à {} machine(s) en ligne.\n", online_count);
 }
 
 fn main() {
@@ -176,8 +224,8 @@ fn main() {
     loop {
         // Prompt
         let prompt = match &selected_name {
-            Some(name) => format!("[master@{}]> ", name),
-            None => "[master]> ".to_string(),
+            Some(name) => format!("\n[master@{}]> ", name),
+            None => "\n[master]> ".to_string(),
         };
         print!("{}", prompt);
         std::io::stdout().flush().unwrap();
@@ -198,8 +246,27 @@ fn main() {
 
             "help" => print_menu(),
 
+            "clear" => {
+                // Effacer l'écran (ANSI escape codes)
+                print!("\x1B[2J\x1B[1;1H");
+                std::io::stdout().flush().unwrap();
+                print_menu();
+            }
+
+            "list" => list_machines(),
+
             "scan" => {
                 scan_machines();
+            }
+
+            "status" => {
+                match &selected_name {
+                    Some(name) => {
+                        let ip = machines_list.get(name).unwrap();
+                        println!("Machine sélectionnée: {} ({})", name, ip);
+                    }
+                    None => println!("Aucune machine sélectionnée."),
+                }
             }
 
             _ if input.starts_with("select ") => {
@@ -208,14 +275,23 @@ fn main() {
                     selected_name = Some(name.clone());
                     println!("Machine sélectionnée : {}", name);
                 } else {
-                    println!("Machine inconnue : '{}'. Lance 'scan' pour voir les machines.", name);
+                    println!("Machine inconnue : '{}'", name);
+                    println!("Machines disponibles:");
+                    for n in machines_list.keys() {
+                        println!("  - {}", n);
+                    }
                 }
             }
 
+            _ if input.starts_with("online ") => {
+                let cmd = input[7..].trim().to_string();
+                send_to_online(&cmd);
+            }
+
             _ if input.starts_with("all ") => {
-                // Envoyer la commande à TOUTES les machines en ligne
+                // Envoyer la commande à TOUTES les machines configurées
                 let cmd = input[4..].trim().to_string();
-                println!("Envoi de '{}' à toutes les machines...", cmd);
+                println!("\nEnvoi de '{}' à toutes les machines configurées...", cmd);
 
                 for (name, ip) in &machines_list {
                     print!("  {} — ", name);
@@ -223,23 +299,31 @@ fn main() {
                     match connect_to(name, ip) {
                         Some(mut session) => {
                             let response = session.run_command(&cmd);
-                            // Afficher juste la première ligne pour ne pas noyer la console
                             let first_line = response.lines().next().unwrap_or("(vide)");
                             println!("{}", first_line);
                         }
                         None => println!("hors ligne"),
                     }
                 }
+                println!();
             }
 
             // Commande vers la machine sélectionnée
             cmd => {
                 match &selected_name.clone() {
-                    None => println!("Aucune machine sélectionnée. Utilise 'select <nom>' ou 'all <cmd>'."),
+                    None => {
+                        println!("Aucune machine sélectionnée.");
+                        println!("Commandes disponibles:");
+                        println!("  select <nom>  — sélectionner une machine");
+                        println!("  all <cmd>     — envoyer à toutes les machines");
+                        println!("  online <cmd>  — envoyer aux machines en ligne");
+                        println!("  scan          — voir les machines en ligne");
+                        println!("  list          — voir toutes les machines configurées");
+                    }
                     Some(name) => {
                         let ip = machines_list[name].clone();
                         match connect_to(name, &ip) {
-                            None => println!("Machine hors ligne."),
+                            None => println!("Machine hors ligne ou inaccessible."),
                             Some(mut session) => {
                                 let response = session.run_command(cmd);
                                 println!("{}", response);
